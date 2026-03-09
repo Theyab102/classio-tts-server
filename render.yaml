@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: classio-tts
+    runtime: python
+    buildCommand: "bash build.sh"
+    startCommand: "uvicorn server:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: MODELS_DIR
+        value: /tmp/piper-models
+    disk:
+      name: piper-models
+      mountPath: /tmp/piper-models
+      sizeGB: 2

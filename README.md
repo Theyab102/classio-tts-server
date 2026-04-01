@@ -42,9 +42,9 @@ sudo apt-get install espeak-ng ffmpeg
 uvicorn server:app --host 0.0.0.0 --port 8000
 ```
 Server runs on:
-```
+
 http://localhost:8000
-```
+
 3 — Connect to Classio frontend
 
 In public/index.html:

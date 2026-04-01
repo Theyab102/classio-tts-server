@@ -4,10 +4,10 @@ Neural TTS backend for Classio using Piper TTS + Hugging Face models.
 
 ---
 
-## 🎙️ Voices Included
+## Voices Included
 
 | ID    | Name  | Gender | Description        |
-|-------|-------|--------|--------------------|
+|-------|-------|--------|-------------------|
 | aria  | Aria  | Female | Warm & natural     |
 | nova  | Nova  | Female | Bright & clear     |
 | jade  | Jade  | Female | Calm & smooth      |
@@ -17,7 +17,7 @@ Neural TTS backend for Classio using Piper TTS + Hugging Face models.
 
 ---
 
-## ⚙️ How it Works
+## How it Works
 
 - Voice models are downloaded from Hugging Face
 - No Render deployment needed
@@ -26,13 +26,13 @@ Neural TTS backend for Classio using Piper TTS + Hugging Face models.
 
 ---
 
-## 🚀 Setup
+## Setup
 
 ### 1 — Install dependencies
 
 ```bash
 pip install -r requirements.txt
-
+```
 Install system packages:
 
 sudo apt-get install espeak-ng ffmpeg
@@ -49,7 +49,7 @@ In public/index.html:
 <script>
   window.__CLASSIO_TTS_URL__ = "http://localhost:8000";
 </script>
-🤖 Model Download (Hugging Face)
+Model Download (Hugging Face)
 First use → downloads model (~80MB)
 Stored locally (auto cached)
 Future requests are fast
@@ -62,7 +62,7 @@ hf_hub_download(
   repo_id="rhasspy/piper-voices",
   filename="aria.onnx"
 )
-📡 API
+API
 POST /generate-podcast
 
 Request:
@@ -82,19 +82,19 @@ Returns all available voices
 
 GET /health
 {"status": "healthy"}
-⚠️ Notes
+Notes
 No cold starts (unlike Render)
 First request: ~20–30s (model download)
 After that: ~5–15s
 Speed is applied during generation
-📦 Optional Deployment
+Optional Deployment
 
 You can deploy this to:
 
 VPS (Linux server)
 Docker
 Cloud (AWS, etc.)
-🧪 Local Test
+Local Test
 curl -X POST http://localhost:8000/generate-podcast \
   -H "Content-Type: application/json" \
   -d '{"text": "Hello, this is Classio.", "voice": "aria"}' \

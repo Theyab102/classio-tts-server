@@ -75,8 +75,7 @@ Request:
 {
   "text": "Your podcast script here...",
   "voice": "aria",
-  "speed": 1.0,
-  "format": "mp3"
+  "speed": 1.0
 }
 ```
 Response: Audio file
@@ -107,5 +106,18 @@ Local Test
 curl -X POST http://localhost:8000/generate-podcast \
   -H "Content-Type: application/json" \
   -d '{"text": "Hello, this is Classio.", "voice": "aria"}' \
-  --output test.mp3
+  --output test.wav
 ```
+
+
+## Reliability changes in this branch
+
+- Model/config pairs are verified against the checksums and sizes in Piper 1.2.0's bundled release catalog. Downloads have a timeout and are staged before either final file is replaced. TLS verification remains enabled.
+- Model loads are serialized per voice; synthesis runs outside FastAPI's event loop with two concurrent slots. Busy responses return 429 with Retry-After.
+- Raw exceptions and upstream details are not returned to clients. Personal audio responses use private, no-store caching.
+- Configure CLASSIO_ALLOWED_ORIGINS for your actual app and preview origins. See .env.example.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest -v test_server` runs the six HTTP/artifact-handling tests. Synthesis is mocked in the HTTP contract test; these tests do not establish voice quality.
+
+This branch does not implement the requested two-host player, caption alignment or background podcast jobs. Model downloads and real synthesis could not be tested because the cloud network policy blocks Hugging Face. Verify every enabled voice before deploying this pinned release/catalog change.
+
+The root App.js is a legacy frontend snapshot and is not served by this FastAPI project. Its browser-side Groq credential path has been removed in favor of Classio's backend. If a secret was previously supplied to a public frontend build, rotate that credential. Maintain the current frontend in Theyab102/Classio.

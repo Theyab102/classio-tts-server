@@ -22,70 +22,31 @@ const storage = getStorage(firebaseApp);
 const rtdb = getDatabase(firebaseApp);
 const googleProvider = new GoogleAuthProvider();
 
-// ─── GROQ AI (FREE) ──────────────────────────────────────────────────────────
-// Store your key in .env as REACT_APP_GROQ_KEY=gsk_...
-// Get a free key at console.groq.com — no credit card needed!
-const GROQ_KEY = process.env.REACT_APP_GROQ_KEY || "";
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-
+// Compatibility snapshot only. Maintain the active frontend in Theyab102/Classio.
+// AI credentials belong to the trusted Classio backend, never a public build variable.
+async function legacyStudyRequest(messages, maxTokens = 3000) {
+  const token = await auth.currentUser?.getIdToken();
+  const response = await fetch('/api/study', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify({ messages, maxTokens, provider: 'auto', allowFallback: false }),
+    signal: AbortSignal.timeout(60000),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || typeof data.text !== 'string') throw new Error(data.error || 'AI is unavailable. Open the current Classio application and retry.');
+  return data.text;
+}
 async function callClaude(system, userMessage, maxTok = 3000) {
-  const res = await fetch(GROQ_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${GROQ_KEY}` },
-    body: JSON.stringify({
-      model: "llama-3.3-70b-versatile",
-      messages: [{ role: "system", content: system }, { role: "user", content: userMessage }],
-      max_tokens: maxTok,
-    }),
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
-  return data.choices?.[0]?.message?.content || "";
+  return legacyStudyRequest([{ role: 'system', content: system }, { role: 'user', content: userMessage }], maxTok);
 }
-
 async function callClaudeChat(system, messages) {
-  const res = await fetch(GROQ_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${GROQ_KEY}` },
-    body: JSON.stringify({
-      model: "llama-3.3-70b-versatile",
-      messages: [{ role: "system", content: system + "\n\nIMPORTANT: Always reply in the SAME language the user wrote in. If Arabic → Arabic. If French → French. Match exactly." }, ...messages],
-      max_tokens: 1200,
-    }),
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
-  return data.choices?.[0]?.message?.content || "";
+  return legacyStudyRequest([{ role: 'system', content: system }, ...messages.slice(-60)], 3000);
 }
-
-// Vision-capable chat — uses Llama 4 Scout on Groq (supports image input)
-// imageBase64: full data URL like "data:image/jpeg;base64,..."
 async function callClaudeVision(system, messages, imageBase64) {
-  // Build the last user message with image attached
-  const msgsWithImage = messages.map((m, i) => {
-    if (i === messages.length - 1 && m.role === "user" && imageBase64) {
-      return {
-        role: "user",
-        content: [
-          { type: "image_url", image_url: { url: imageBase64 } },
-          { type: "text",      text: m.content || "Analyze this image and answer the question." },
-        ],
-      };
-    }
-    return m;
-  });
-  const res = await fetch(GROQ_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${GROQ_KEY}` },
-    body: JSON.stringify({
-      model: "meta-llama/llama-4-scout-17b-16e-instruct",
-      messages: [{ role: "system", content: system + "\n\nIMPORTANT: Always reply in the SAME language the user wrote in. Match exactly." }, ...msgsWithImage],
-      max_tokens: 2000,
-    }),
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
-  return data.choices?.[0]?.message?.content || "";
+  const conversation = messages.map((message, index) => index === messages.length - 1 && message.role === 'user' && imageBase64
+    ? { role: 'user', content: [{ type: 'image_url', image_url: { url: imageBase64 } }, { type: 'text', text: message.content || 'Explain this image.' }] }
+    : message);
+  return legacyStudyRequest([{ role: 'system', content: system }, ...conversation.slice(-60)], 3000);
 }
 
 // ─── GLOBAL VOICE SYSTEM ──────────────────────────────────────────────────────

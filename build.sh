@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
 echo "=== Installing Python dependencies ==="
-pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install --require-hashes -r requirements.lock
 
 echo "=== Build complete ==="

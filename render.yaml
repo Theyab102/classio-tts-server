@@ -5,6 +5,8 @@ services:
     buildCommand: "bash build.sh"
     startCommand: "uvicorn server:app --host 0.0.0.0 --port $PORT"
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.17
       - key: MODELS_DIR
         value: /tmp/piper-models
       - key: CLASSIO_VOICE_QUALITY

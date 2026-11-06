@@ -1,6 +1,12 @@
 # Classio podcast / Piper voice server
 
-Python 3.11, FastAPI, Piper 1.2.0 and FFmpeg. This branch upgrades the existing
+The subsequent security pass uses FastAPI 0.140.0, Starlette 1.3.1, Pydantic 2.14.3
+and Python 3.11.17. `requirements.lock` and `requirements-dev.lock` include exact
+dependency hashes. A fresh locked install, the 18 tests and bundled phonemization
+passed on that runtime; `pip-audit` reported no known project dependency
+vulnerabilities. This does not establish live voice quality or hosted deployment.
+
+Python 3.11.17, FastAPI, Piper 1.2.0 and FFmpeg. This branch upgrades the existing
 service with private one/two-host jobs and measured phrase captions. Maintain the
 React application in `Theyab102/Classio`; this repository's root `App.js` is a
 legacy snapshot and is not served by FastAPI.
@@ -10,7 +16,7 @@ legacy snapshot and is not served by FastAPI.
 ```sh
 python3.11 -m venv .venv
 . .venv/bin/activate
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.lock
 # Install FFmpeg for compact AAC/M4A output. espeak-ng is useful for diagnostics;
 # the pinned piper_phonemize wheel also supplies an eSpeak library.
 ```
@@ -135,6 +141,9 @@ is made from synthetic tests.
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python -m unittest -v test_server test_podcasts
 ```
+
+For local tests, install the hashed development lock first:
+`pip install --require-hashes -r requirements-dev.lock`.
 
 18 tests executed successfully in the cloud task: HTTP/contracts, input/ticket
 validation, cross-owner and changed-script denial, queue/replay/recovery, failed

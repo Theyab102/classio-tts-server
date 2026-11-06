@@ -12,10 +12,11 @@ import json
 import shutil
 import tempfile
 import threading
+from collections import OrderedDict
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
@@ -27,6 +28,23 @@ app.add_middleware(
     allow_methods=["POST", "GET", "OPTIONS"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def limit_request_body(request: Request, call_next):
+    # Bound JSON parsing before validated, ticket-scoped handlers run.
+    if request.method == "POST":
+        try:
+            if int(request.headers.get("content-length", "0")) > 1000000:
+                return JSONResponse({"detail":"Request is too large."}, status_code=413)
+        except ValueError:
+            return JSONResponse({"detail":"Invalid request length."}, status_code=400)
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 1000000:
+                return JSONResponse({"detail":"Request is too large."}, status_code=413)
+        request._body = bytes(body)
+    return await call_next(request)
 
 # ── Verified voice paths from HuggingFace rhasspy/piper-voices (main branch) ──
 VOICES = {
@@ -44,7 +62,16 @@ MODELS_DIR.mkdir(parents=True, exist_ok=True)
 # Match the release catalog and checksums bundled with Piper 1.2.0.
 HF_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0"
 
-_voice_cache = {}
+VOICE_QUALITY = os.environ.get("CLASSIO_VOICE_QUALITY", "medium")
+if VOICE_QUALITY not in {"medium", "high"}:
+    raise RuntimeError("CLASSIO_VOICE_QUALITY must be medium or high")
+if VOICE_QUALITY == "high":
+    for voice in ("aria", "echo"):
+        VOICES[voice]["hf"] = VOICES[voice]["hf"].replace("/medium/", "/high/").replace("-medium.onnx", "-high.onnx")
+for metadata in VOICES.values():
+    metadata["quality"] = "high" if "/high/" in metadata["hf"] else "medium"
+_voice_cache = OrderedDict()
+_model_cache_lock = threading.Lock()
 _voice_locks = {voice: threading.Lock() for voice in VOICES}
 _synthesis_slots = threading.BoundedSemaphore(2)
 
@@ -56,7 +83,7 @@ def model_files(voice_id):
     manifest = json.loads(Path(piper.__file__).with_name("voices.json").read_text())
     entries = {name: info for voice in manifest.values() for name, info in voice["files"].items()}
     path = VOICES[voice_id]["hf"]
-    return {name: entries[name] for name in (path, path + ".json")}
+    return {name: entries[name] for name in (path, path + ".json", str(Path(path).parent / "MODEL_CARD"))}
 
 
 def verified(path, expected):
@@ -69,16 +96,20 @@ def verified(path, expected):
     return digest.hexdigest() == expected["md5_digest"]
 
 
+def model_target(name, voice_id):
+    return MODELS_DIR / (voice_id + ".MODEL_CARD" if Path(name).name == "MODEL_CARD" else Path(name).name)
+
+
 def ensure_model(voice_id):
     files = model_files(voice_id)
-    if all(verified(MODELS_DIR / Path(name).name, expected) for name, expected in files.items()):
+    if all(verified(model_target(name, voice_id), expected) for name, expected in files.items()):
         return MODELS_DIR / Path(VOICES[voice_id]["hf"]).name
     temporary = []
     try:
         for name, expected in files.items():
             with tempfile.NamedTemporaryFile(dir=MODELS_DIR, suffix=".part", delete=False) as destination:
                 path = Path(destination.name)
-                temporary.append((path, MODELS_DIR / Path(name).name))
+                temporary.append((path, model_target(name, voice_id)))
                 with urllib.request.urlopen(f"{HF_BASE}/{name}?download=true", timeout=30) as response:
                     shutil.copyfileobj(response, destination)
             if not verified(path, expected):
@@ -93,10 +124,15 @@ def ensure_model(voice_id):
 
 
 def get_voice(voice_id: str):
-    with _voice_locks[voice_id]:
+    with _voice_locks[voice_id], _model_cache_lock:
         if voice_id not in _voice_cache:
+            # Keep at most the two conversation voices loaded. Long podcasts
+            # stream to disk instead of retaining their full PCM in memory.
+            while len(_voice_cache) >= 2:
+                _voice_cache.popitem(last=False)
             from piper import PiperVoice
             _voice_cache[voice_id] = PiperVoice.load(str(ensure_model(voice_id)))
+        _voice_cache.move_to_end(voice_id)
         return _voice_cache[voice_id]
 
 
@@ -139,8 +175,14 @@ def bounded_synthesis(text, voice, speed):
         _synthesis_slots.release()
 
 
+from podcast_jobs import install_routes
+podcast_jobs = install_routes(app, synthesize_wav)
+
+
 @app.post("/generate-podcast")
 async def generate_podcast(req: TTSRequest):
+    if os.environ.get("CLASSIO_ALLOW_LEGACY_TTS", "false") != "true":
+        raise HTTPException(410, "Use Classio’s authenticated podcast job endpoint.")
     if not req.text or len(req.text.strip()) < 5:
         raise HTTPException(400, "Text too short")
     if len(req.text) > 50000:

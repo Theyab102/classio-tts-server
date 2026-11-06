@@ -1,123 +1,156 @@
-# Classio TTS Server (Hugging Face Version)
+# Classio podcast / Piper voice server
 
-Neural TTS backend for Classio using Piper TTS + Hugging Face models.
+Python 3.11, FastAPI, Piper 1.2.0 and FFmpeg. This branch upgrades the existing
+service with private one/two-host jobs and measured phrase captions. Maintain the
+React application in `Theyab102/Classio`; this repository's root `App.js` is a
+legacy snapshot and is not served by FastAPI.
 
----
+## Install and start
 
-## Voices Included
-
-| ID    | Name  | Gender | Description        |
-|-------|-------|--------|-------------------|
-| aria  | Aria  | Female | Warm & natural     |
-| nova  | Nova  | Female | Bright & clear     |
-| jade  | Jade  | Female | Calm & smooth      |
-| echo  | Echo  | Male   | Deep & confident   |
-| atlas | Atlas | Male   | Bold & clear       |
-| fable | Fable | Male   | Friendly & warm    |
-
----
-
-## How it Works
-
-- Voice models are downloaded from Hugging Face
-- No Render deployment needed
-- Backend runs locally or on any server
-- Models are cached after first use
-
----
-
-## Setup
-
-### 1 — Install dependencies
-
-```bash
+```sh
+python3.11 -m venv .venv
+. .venv/bin/activate
 pip install -r requirements.txt
+# Install FFmpeg for compact AAC/M4A output. espeak-ng is useful for diagnostics;
+# the pinned piper_phonemize wheel also supplies an eSpeak library.
 ```
-Install system packages:
-```
-sudo apt-get install espeak-ng ffmpeg
-```
-2 — Run the server
-```
-uvicorn server:app --host 0.0.0.0 --port 8000
-```
-Server runs on:
 
-http://localhost:8000
+Configure variables securely on your host, using `.env.example` for names. The
+application does not automatically load a dotenv file. Never commit a real `.env`.
 
-3 — Connect to Classio frontend
+- `CLASSIO_TTS_SIGNING_SECRET`: the identical random 32+ character **server-only**
+  value in this service and Vercel. No frontend prefix. Without it jobs fail closed.
+- `PODCAST_DATA_DIR`: private **persistent** directory for SQLite and generated
+  audio. Default `/tmp/classio-podcasts` is temporary unless mounted persistently.
+- `MODELS_DIR`: model cache; use persistent storage to avoid repeated downloads.
+- `CLASSIO_ALLOWED_ORIGINS`: comma-separated production/authorized-preview origins.
+  CORS is supplementary; HMAC tickets enforce access.
+- `CLASSIO_VOICE_QUALITY=medium`: original resource profile; `high` upgrades Aria
+  and Echo to their catalog high-quality models. Test memory and licenses first.
+- `PODCAST_CACHE_TTL_SECONDS=86400`: completed/failed server cache retention. Cache
+  is pruned on startup/new jobs, not a promise of immediate scheduled deletion.
+- `CLASSIO_ALLOW_LEGACY_TTS=false`: keep the old unscoped synthesis route disabled.
 
-In public/index.html:
+```sh
+uvicorn server:app --host 0.0.0.0 --port 8000 --workers 1
 ```
-<script>
-  window.__CLASSIO_TTS_URL__ = "http://localhost:8000";
-</script>
-```
-Model Download (Hugging Face)
-First use → downloads model (~80MB)
-Stored locally (auto cached)
-Future requests are fast
 
-Manual download example:
-```
-from huggingface_hub import hf_hub_download
+Use **one process and one replica per job directory**. The local executor/SQLite
+queue is durable but has no distributed lease for multiple workers/replicas.
+Restart recovery resumes queued work; a partly synthesized job restarts its audio
+assembly. A reverse proxy should terminate HTTPS. Do not expose the data/model
+folders through static hosting. `render.yaml` keeps the existing 2 GiB model disk
+and puts podcast data on it; inspect costs and capacity before provisioning it.
+No hosting plan, paid resource or deployment was created by this work.
 
-hf_hub_download(
-  repo_id="rhasspy/piper-voices",
-  filename="aria.onnx"
-)
-```
-API
-POST /generate-podcast
+## Connect the main application
 
-Request:
-```
+Set public `REACT_APP_CLASSIO_PODCAST_URL` to this service's HTTPS origin at build
+time. Preserve `REACT_APP_CLASSIO_TTS_URL` for the existing Hugging Face transcript
+service if it is separate. This repository does not implement `/youtube-transcript`.
+Configure the shared secret on Vercel and this server, plus the main application's
+Firebase Admin/quota/provider settings. Redeploy/rebuild after those changes.
+Never put the signing secret in either public URL or browser JavaScript.
+
+The app first requests a short-lived ticket from `/api/podcast`, after signed age
+access/account checks and quotas. This service verifies the ticket's signature,
+expiry, pseudonymous owner and exact normalized script/voice fingerprint for
+creation, status and audio. Tokens are sent in Authorization headers, not URLs.
+Knowing a job ID alone does not grant audio access.
+
+## HTTP contract
+
+- `GET /health`: process readiness, not proof that every voice model is installed.
+- `GET /voices`: the six English voice IDs.
+- `GET /podcasts/capabilities`: language/host/alignment/configuration information.
+- `POST /podcasts/jobs`: validated JSON and `Authorization: Bearer <ticket>`.
+- `GET /podcasts/jobs/{id}`: authorized status/progress/metadata.
+- `GET /podcasts/jobs/{id}/audio`: authorized private/no-store M4A or WAV.
+- `POST /generate-podcast`: HTTP 410 by default. Temporary legacy opt-in restores
+  the old unscoped, single-voice route for migration only; leave it off in production.
+
+Example **non-secret** job payload (obtain a ticket through Classio):
+
+```json
 {
-  "text": "Your podcast script here...",
-  "voice": "aria",
-  "speed": 1.0
+  "language": "en",
+  "voices": ["aria", "echo"],
+  "speed": 1.0,
+  "dialogue": [
+    {"speaker": 0, "text": "Energy transfers between objects."},
+    {"speaker": 1, "text": "What happens when a moving ball hits another ball?"}
+  ]
 }
 ```
-Response: Audio file
 
-GET /voices
+One/two distinct voices, up to 80 turns, 1,200 characters/turn and 40,000 total.
+Synthesis speed is 0.75–1.25 with at most two decimal places. Player playback
+speed is separate. Invalid/unknown fields are rejected; both hosts must speak.
+The 1 MiB HTTP body cap applies before schema parsing. Jobs are idempotent per
+owner+input; a completed request reuses audio. The queue allows two pending jobs
+per owner and eight globally; failure responses preserve the client's script.
+Public errors/logs omit scripts, keys, provider responses and internal paths.
 
-Returns all available voices
+Metadata includes actual `duration`, voices, sample rate, `captions`, `envelope`
+and `envelopeStep`. Each caption has speaker/turn/text/start/end. Alignment is
+`synthesized-phrase-boundaries`: every complete phrase is separately synthesized
+and its exact PCM length defines the cue. It is not word alignment or lip sync.
+The player follows the audio element's current time and generated RMS envelope.
 
-GET /health
+The assembler trims surrounding silence, applies short fades, bounds RMS gain
+and peaks, and writes WAV incrementally to limit memory. FFmpeg encodes AAC/M4A
+for smaller transfers and Safari playback; a real WAV remains if encoding fails.
+Private files use mode 0600. Completed scripts are removed from the SQLite payload;
+caption text remains with cached audio until cleanup. Put the directory on a
+private volume and include its storage/access/retention in your operator policy.
+
+## Voices, downloads and licenses
+
+| ID | Medium model | High override |
+| --- | --- | --- |
+| aria | en_US-lessac-medium | en_US-lessac-high |
+| nova | en_US-amy-medium | unchanged |
+| jade | en_US-kristin-medium | unchanged |
+| echo | en_US-ryan-medium | en_US-ryan-high |
+| atlas | en_US-joe-medium | unchanged |
+| fable | en_US-john-medium | unchanged |
+
+Model, JSON configuration and model-card downloads are checked against the pinned
+Piper package's catalog hashes/sizes. Staged pairs are atomically installed only
+after verification. The model cache holds at most two loaded voices, with locks.
+Do not bypass TLS or checksum verification to make a failed download pass.
+All paths were checked against the installed catalog, but real model downloads
+and voice quality were blocked by this environment's network policy.
+
+Review each downloaded `MODEL_CARD` (stored with its voice prefix), dataset license
+and Piper dependency licenses for your intended distribution/hosting. Alias names
+are Classio UI names; they do not imply a guarantee of naturalness, emotional
+controls or commercial licensing. High-quality models need additional memory.
+Only English audio is supported by this catalog. Listen to real examples from
+every enabled voice before release; no claim of Turbo AI-equivalent speech quality
+is made from synthetic tests.
+
+## Verification
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python -m unittest -v test_server test_podcasts
 ```
-{"status": "healthy"}
-```
-Notes
-No cold starts (unlike Render)
-First request: ~20–30s (model download)
-After that: ~5–15s
-Speed is applied during generation
-Optional Deployment
 
-You can deploy this to:
+18 tests executed successfully in the cloud task: HTTP/contracts, input/ticket
+validation, cross-owner and changed-script denial, queue/replay/recovery, failed
+segments, clipping limits, real PCM-duration caption boundaries and AAC encoding.
+Model downloads/speech synthesis are test doubles where required. These tests do
+not establish live Piper pronunciation or natural voice quality.
 
-VPS (Linux server)
-Docker
-Cloud (AWS, etc.)
+For local cross-repository Chromium QA only:
 
-Local Test
-```
-curl -X POST http://localhost:8000/generate-podcast \
-  -H "Content-Type: application/json" \
-  -d '{"text": "Hello, this is Classio.", "voice": "aria"}' \
-  --output test.wav
+```sh
+python tests/fixture_server.py
 ```
 
-
-## Reliability changes in this branch
-
-- Model/config pairs are verified against the checksums and sizes in Piper 1.2.0's bundled release catalog. Downloads have a timeout and are staged before either final file is replaced. TLS verification remains enabled.
-- Model loads are serialized per voice; synthesis runs outside FastAPI's event loop with two concurrent slots. Busy responses return 429 with Retry-After.
-- Raw exceptions and upstream details are not returned to clients. Personal audio responses use private, no-store caching.
-- Configure CLASSIO_ALLOWED_ORIGINS for your actual app and preview origins. See .env.example.
-- `PYTHONDONTWRITEBYTECODE=1 python -m unittest -v test_server` runs the six HTTP/artifact-handling tests. Synthesis is mocked in the HTTP contract test; these tests do not establish voice quality.
-
-This branch does not implement the requested two-host player, caption alignment or background podcast jobs. Model downloads and real synthesis could not be tested because the cloud network policy blocks Hugging Face. Verify every enabled voice before deploying this pinned release/catalog change.
-
-The root App.js is a legacy frontend snapshot and is not served by this FastAPI project. Its browser-side Groq credential path has been removed in favor of Classio's backend. If a secret was previously supplied to a public frontend build, rotate that credential. Maintain the current frontend in Theyab102/Classio.
+This loopback-only fixture produces explicit sine-wave speech stand-ins, using
+the real job store, authorization, PCM assembly and FFmpeg pipeline. It refuses
+common production hosts. **Never deploy this test entry point.** In Classio run
+`npm run build`, `node tests/production-preview.cjs`, then `npm run test:integrated`.
+The browser verifies actual audio playback/pause/seek/speed/captions/replay using
+those stand-ins. Live speech and physical iPhone/iPad checks remain necessary.

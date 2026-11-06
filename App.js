@@ -572,7 +572,7 @@ const Fmt = ({ text }) => (
 );
 
 // ─── GLOBAL STYLES ────────────────────────────────────────────────────────────
-const GS = `@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Fraunces:wght@400;600;700&display=swap');
+const GS = `
 *{box-sizing:border-box;margin:0;padding:0} input,textarea,button{font-family:inherit}
 ::-webkit-scrollbar{width:6px} ::-webkit-scrollbar-thumb{background:#D8D4CF;border-radius:3px}
 .hov:hover{opacity:0.82} .card-hov:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.10)!important}

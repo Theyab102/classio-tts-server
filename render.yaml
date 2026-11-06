@@ -7,6 +7,16 @@ services:
     envVars:
       - key: MODELS_DIR
         value: /tmp/piper-models
+      - key: CLASSIO_VOICE_QUALITY
+        value: medium
+      - key: PODCAST_DATA_DIR
+        value: /tmp/piper-models/podcasts
+      - key: CLASSIO_TTS_SIGNING_SECRET
+        sync: false
+      - key: CLASSIO_ALLOWED_ORIGINS
+        value: https://classio-eta.vercel.app
+      - key: CLASSIO_ALLOW_LEGACY_TTS
+        value: "false"
     disk:
       name: piper-models
       mountPath: /tmp/piper-models

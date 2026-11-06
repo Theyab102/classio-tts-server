@@ -1,5 +1,6 @@
 import hashlib
 import io
+import os
 import tempfile
 import unittest
 import wave
@@ -12,7 +13,30 @@ import server
 
 class SpeechServerTests(unittest.TestCase):
     def setUp(self):
+        self.environment = patch.dict(os.environ, {"CLASSIO_ALLOW_LEGACY_TTS":"true"})
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
         self.client = TestClient(server.app)
+
+    def test_every_enabled_voice_has_model_config_and_license_card_in_the_pinned_catalog(self):
+        for voice in server.VOICES:
+            files=server.model_files(voice)
+            self.assertEqual(len(files),3)
+            self.assertTrue(any(name.endswith('MODEL_CARD') for name in files))
+            self.assertTrue(all(info['size_bytes']>0 and len(info['md5_digest'])==32 for info in files.values()))
+        for voice in ('aria','echo'):
+            path=server.VOICES[voice]['hf'].replace('/medium/','/high/').replace('-medium.onnx','-high.onnx')
+            with patch.dict(server.VOICES[voice],{'hf':path}):
+                self.assertEqual(len(server.model_files(voice)),3)
+
+    def test_legacy_route_is_disabled_without_explicit_migration_flag(self):
+        with patch.dict(os.environ, {"CLASSIO_ALLOW_LEGACY_TTS":"false"}):
+            self.assertEqual(self.client.post('/generate-podcast',json={'text':'Hello Classio'}).status_code,410)
+
+    def test_oversized_http_body_is_rejected_before_synthesis(self):
+        with patch.object(server,'synthesize_wav') as synthesize:
+            self.assertEqual(self.client.post('/generate-podcast',json={'text':'x'*1000001}).status_code,413)
+            synthesize.assert_not_called()
 
     def test_health_and_six_voice_descriptions(self):
         self.assertEqual(self.client.get('/health').json(), {'status': 'healthy'})

@@ -33,10 +33,16 @@ class SpeechSecurityTests(unittest.TestCase):
 
     def test_public_generation_is_rate_limited(self):
         with patch('server.synthesize_wav', return_value=b'fixture') as synthesis:
-            for _ in range(8):
+            for _ in range(30):
                 self.assertEqual(self.client.post('/generate-podcast',json={'text':'hello there'}).status_code,200)
             self.assertEqual(self.client.post('/generate-podcast',json={'text':'hello there'}).status_code,429)
-            self.assertEqual(synthesis.call_count,8)
+            self.assertEqual(synthesis.call_count,30)
+
+    def test_long_episode_and_immediate_voice_rebuild_fit_the_client_limit(self):
+        with patch('server.synthesize_wav', return_value=b'RIFFwav') as synthesis:
+            for voice in ['aria'] * 12 + ['nova'] * 12:
+                self.assertEqual(self.client.post('/generate-podcast', json={'text':'A study explanation.', 'voice':voice}).status_code, 200)
+            self.assertEqual(synthesis.call_count, 24)
 
     def test_unknown_browser_origin_is_not_allowed(self):
         response=self.client.options('/generate-podcast',headers={'Origin':'https://untrusted.example','Access-Control-Request-Method':'POST'})

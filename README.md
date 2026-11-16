@@ -60,8 +60,10 @@ Set `CLASSIO_ALLOWED_ORIGINS` to comma-separated actual frontend origins. Defaul
 include the existing Vercel site and local port 3000. CORS constrains browsers;
 it is not authentication. Do not trust a caller-supplied forwarding header as
 identity. The service bounds request bodies, text and speed; allows two synthesis
-jobs concurrently; and applies per-instance limits of eight requests per client
-per minute and 60 total. Multi-instance deployments also need upstream limits.
+jobs concurrently; and applies per-instance limits of 30 requests per client
+per minute and 60 total. This permits a full 12-turn episode and an immediate
+voice rebuild without dropping the normal flow. Multi-instance deployments also
+need upstream limits.
 
 Personal audio is `no-store`. Error responses omit internal paths/network details,
 and diagnostic messages omit the script. The public API deliberately has no paid

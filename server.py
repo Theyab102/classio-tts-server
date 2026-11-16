@@ -164,7 +164,7 @@ def generate_podcast(req: TTSRequest, request: Request):
         for key in list(_requests):
             if _requests[key][0] + 60 <= now:
                 del _requests[key]
-        for key, limit in (("client:" + client, 8), ("all", 60)):
+        for key, limit in (("client:" + client, 30), ("all", 60)):
             if _requests.get(key, (now, 0))[1] >= limit:
                 raise HTTPException(429, "Speech request limit reached. Try again in a minute.", headers={"Retry-After": "60"})
         if len(_requests) >= 5000:

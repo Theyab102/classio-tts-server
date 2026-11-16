@@ -7,17 +7,24 @@ import os
 import io
 import wave
 import urllib.request
+import tempfile
+import threading
+import logging
+import time
+import secrets
+import hashlib
+import hmac
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 app = FastAPI(title="Classio TTS Server")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[origin.strip() for origin in os.environ.get("CLASSIO_ALLOWED_ORIGINS", "https://classio-eta.vercel.app,http://localhost:3000,http://127.0.0.1:3000").split(",") if origin.strip()],
     allow_methods=["POST", "GET", "OPTIONS"],
     allow_headers=["*"],
 )
@@ -39,31 +46,72 @@ MODELS_DIR.mkdir(parents=True, exist_ok=True)
 HF_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
 
 _voice_cache = {}
+_model_lock = threading.Lock()
+_generation_slots = threading.BoundedSemaphore(2)
+_request_lock = threading.Lock()
+_requests = {}
+_rate_secret = secrets.token_bytes(32)
+logger = logging.getLogger("classio.tts")
+
+
+class BodyLimit:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "POST":
+            return await self.app(scope, receive, send)
+        messages, size = [], 0
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            size += len(message.get("body", b""))
+            if size > 220000:
+                await send({"type": "http.response.start", "status": 413, "headers": [(b"content-type", b"application/json"), (b"cache-control", b"no-store")]})
+                await send({"type": "http.response.body", "body": b'{"detail":"This speech request is too large."}'})
+                return
+            messages.append(message)
+            if not message.get("more_body", False):
+                break
+        async def replay():
+            return messages.pop(0) if messages else await receive()
+        await self.app(scope, replay, send)
+
+
+app.add_middleware(BodyLimit)
 
 
 def get_voice(voice_id: str):
-    if voice_id in _voice_cache:
-        return _voice_cache[voice_id]
-
-    from piper import PiperVoice
-
-    info = VOICES[voice_id]
-    hf_path = info["hf"]
-    model_name = Path(hf_path).stem   # e.g. en_US-lessac-medium
-    onnx_path = MODELS_DIR / f"{model_name}.onnx"
-    json_path = MODELS_DIR / f"{model_name}.onnx.json"
-
-    if not onnx_path.exists():
-        print(f"[TTS] Downloading {model_name}...")
-        onnx_url = f"{HF_BASE}/{hf_path}?download=true"
-        json_url = f"{HF_BASE}/{hf_path}.json?download=true"
-        urllib.request.urlretrieve(onnx_url, onnx_path)
-        urllib.request.urlretrieve(json_url, json_path)
-        print(f"[TTS] Downloaded {onnx_path} ({onnx_path.stat().st_size:,} bytes)")
-
-    voice = PiperVoice.load(str(onnx_path))
-    _voice_cache[voice_id] = voice
-    return voice
+    with _model_lock:
+        if voice_id in _voice_cache:
+            return _voice_cache[voice_id]
+        from piper import PiperVoice
+        hf_path = VOICES[voice_id]["hf"]
+        model_name = Path(hf_path).stem
+        onnx_path = MODELS_DIR / f"{model_name}.onnx"
+        json_path = MODELS_DIR / f"{model_name}.onnx.json"
+        if not onnx_path.exists() or not json_path.exists():
+            # Publish complete pairs only; a failed download never becomes a
+            # cached model that breaks every subsequent request.
+            with tempfile.TemporaryDirectory(dir=MODELS_DIR) as temporary:
+                for suffix in (".onnx", ".onnx.json"):
+                    target = Path(temporary) / (model_name + suffix)
+                    url = f"{HF_BASE}/{hf_path}{'.json' if suffix.endswith('.json') else ''}?download=true"
+                    size = 0
+                    with urllib.request.urlopen(url, timeout=40) as response, target.open("wb") as output:
+                        while chunk := response.read(1024 * 1024):
+                            size += len(chunk)
+                            if size > 100 * 1024 * 1024:
+                                raise ValueError("Voice artifact exceeds size limit")
+                            output.write(chunk)
+                    if not size:
+                        raise ValueError("Empty voice artifact")
+                (Path(temporary) / (model_name + ".onnx.json")).replace(json_path)
+                (Path(temporary) / (model_name + ".onnx")).replace(onnx_path)
+        voice = PiperVoice.load(str(onnx_path))
+        _voice_cache[voice_id] = voice
+        return voice
 
 
 def synthesize_wav(text: str, voice_id: str, speed: float = 1.0) -> bytes:
@@ -79,9 +127,9 @@ def synthesize_wav(text: str, voice_id: str, speed: float = 1.0) -> bytes:
 
 
 class TTSRequest(BaseModel):
-    text:  str
-    voice: str   = "aria"
-    speed: float = 1.0
+    text: str = Field(min_length=5, max_length=5000)
+    voice: str = Field(default="aria", max_length=20)
+    speed: float = Field(default=1.0, ge=0.5, le=3.0, allow_inf_nan=False)
 
 
 @app.get("/")
@@ -97,7 +145,7 @@ def health():
     return {"status": "healthy"}
 
 @app.post("/generate-podcast")
-async def generate_podcast(req: TTSRequest):
+def generate_podcast(req: TTSRequest, request: Request):
     if not req.text or len(req.text.strip()) < 5:
         raise HTTPException(400, "Text too short")
     if len(req.text) > 50000:
@@ -107,6 +155,25 @@ async def generate_podcast(req: TTSRequest):
 
     speed = max(0.5, min(req.speed, 3.0))
 
+    # Per-instance limits bound public CPU use. Apply deployment-wide limits
+    # at the hosting proxy as well when running multiple instances.
+    now = time.monotonic()
+    address = request.client.host if request.client else "unknown"
+    client = hmac.new(_rate_secret, address.encode(), hashlib.sha256).hexdigest()
+    with _request_lock:
+        for key in list(_requests):
+            if _requests[key][0] + 60 <= now:
+                del _requests[key]
+        for key, limit in (("client:" + client, 8), ("all", 60)):
+            if _requests.get(key, (now, 0))[1] >= limit:
+                raise HTTPException(429, "Speech request limit reached. Try again in a minute.", headers={"Retry-After": "60"})
+        if len(_requests) >= 5000:
+            raise HTTPException(503, "Speech is busy. Try again shortly.")
+        for key in ("client:" + client, "all"):
+            start, count = _requests.get(key, (now, 0))
+            _requests[key] = (start, count + 1)
+    if not _generation_slots.acquire(blocking=False):
+        raise HTTPException(429, "Speech is busy. Try again shortly.", headers={"Retry-After": "10"})
     try:
         print(f"[TTS] voice={req.voice} speed={speed} chars={len(req.text)}")
         audio = synthesize_wav(req.text, req.voice, speed)
@@ -114,11 +181,13 @@ async def generate_podcast(req: TTSRequest):
         return Response(
             content=audio,
             media_type="audio/wav",
-            headers={"Cache-Control": "public, max-age=3600"},
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
         )
-    except Exception as e:
-        print(f"[TTS] Error: {e}")
-        raise HTTPException(500, str(e))
+    except Exception as error:
+        logger.warning("Speech generation failed: %s", type(error).__name__)
+        raise HTTPException(503, "Speech could not be generated. Try again shortly; your transcript is kept.") from None
+    finally:
+        _generation_slots.release()
 
 
 if __name__ == "__main__":

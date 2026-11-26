@@ -27,6 +27,7 @@ app.add_middleware(
     allow_origins=[origin.strip() for origin in os.environ.get("CLASSIO_ALLOWED_ORIGINS", "https://classio-eta.vercel.app,http://localhost:3000,http://127.0.0.1:3000").split(",") if origin.strip()],
     allow_methods=["POST", "GET", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["Retry-After"],
 )
 
 # ── Verified voice paths from HuggingFace rhasspy/piper-voices (main branch) ──

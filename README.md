@@ -10,16 +10,16 @@ Use the Python 3.11 version pinned in `.python-version`.
 
 ```sh
 python3.11 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-MODELS_DIR=/tmp/piper-models .venv/bin/uvicorn server:app --host 127.0.0.1 --port 8001
+.venv/bin/python -m pip install -r requirements-dev.txt
+MODELS_DIR=/tmp/piper-models .venv/bin/uvicorn server:app --host 127.0.0.1 --port 3001
 ```
 
 For a managed cloud checkout with the prepared environment, use
 `/workspace/.venvs/classio-tts/bin/uvicorn` instead of the local `.venv` path.
-Port 8001 avoids reserved cloud desktop ports. Production hosting can use its
+Port 3001 avoids reserved cloud desktop ports. Production hosting can use its
 assigned `PORT` with the existing `render.yaml` start command.
 
-Set `REACT_APP_CLASSIO_TTS_URL=http://127.0.0.1:8001` when starting the local
+Set `REACT_APP_CLASSIO_TTS_URL=http://127.0.0.1:3001` when starting the local
 Classio frontend. Do not inject a different window global in `public/index.html`.
 Keep the configured HTTPS speech endpoint for the production frontend.
 
@@ -32,7 +32,7 @@ Keep the configured HTTPS speech endpoint for the production frontend.
   frontend already splits episodes into turns. Older scripts are chunked on restore.
 
 ```sh
-curl --fail http://127.0.0.1:8001/generate-podcast \
+curl --fail http://127.0.0.1:3001/generate-podcast \
   -H 'Content-Type: application/json' \
   -d '{"text":"Hello, this is Classio.","voice":"aria","speed":1}' \
   --output /tmp/classio-speech.wav
@@ -60,7 +60,8 @@ Set `CLASSIO_ALLOWED_ORIGINS` to comma-separated actual frontend origins. Defaul
 include the existing Vercel site and local port 3000. CORS constrains browsers;
 it is not authentication. Do not trust a caller-supplied forwarding header as
 identity. The service bounds request bodies, text and speed; allows two synthesis
-jobs concurrently; and applies per-instance limits of 30 requests per client
+jobs concurrently; and exposes `Retry-After` to allowed browser origins so they
+can honor the actual capacity reset. The service applies per-instance limits of 30 requests per client
 per minute and 60 total. This permits a full 12-turn episode and an immediate
 voice rebuild without dropping the normal flow. Multi-instance deployments also
 need upstream limits.
@@ -75,7 +76,11 @@ provider key. Its limits are not a deployment-wide cost or abuse guarantee.
 .venv/bin/python -m unittest -v test_server.py
 ```
 
-Five tests cover health/catalog, validation/body limits, sanitized errors,
-private caching, rate limiting and CORS. Synthesis is mocked in this suite; the
+Seven tests cover health/catalog, validation/body limits, sanitized errors,
+private caching, rate limiting and CORS, including browser access to `Retry-After`. Synthesis is mocked in this suite; the
 real WAV request above is a separate integration check. No live production
 provider or physical-device validation is implied by these tests.
+
+The HTTP stack is pinned to patched FastAPI, Starlette and Pydantic releases.
+The Piper, NumPy and ONNX speech-engine versions remain unchanged. GitHub Actions
+runs API tests and a dependency audit; it does not download voice models.

@@ -44,6 +44,15 @@ class SpeechSecurityTests(unittest.TestCase):
                 self.assertEqual(self.client.post('/generate-podcast', json={'text':'A study explanation.', 'voice':voice}).status_code, 200)
             self.assertEqual(synthesis.call_count, 24)
 
+    def test_browser_can_read_capacity_retry_header(self):
+        with patch('server._generation_slots') as slots:
+            slots.acquire.return_value = False
+            response = self.client.post('/generate-podcast', json={'text': 'A clear explanation.'}, headers={'Origin': 'https://classio-eta.vercel.app'})
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.headers['retry-after'], '10')
+        self.assertEqual(response.headers['access-control-allow-origin'], 'https://classio-eta.vercel.app')
+        self.assertIn('retry-after', response.headers.get('access-control-expose-headers', '').lower())
+
     def test_unknown_browser_origin_is_not_allowed(self):
         response=self.client.options('/generate-podcast',headers={'Origin':'https://untrusted.example','Access-Control-Request-Method':'POST'})
         self.assertNotIn('access-control-allow-origin',response.headers)

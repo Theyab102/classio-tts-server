@@ -14,9 +14,28 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
-      - run: python -m pip install --upgrade pip
+      - run: python -m pip install --upgrade pip setuptools wheel
       - run: python -m pip install -r requirements-dev.txt
       - run: python -c "from piper import PiperVoice; import onnxruntime"
       - run: python -m unittest -v test_server.py
       - run: python -m pip install pip-audit==2.10.1
-      - run: python -m pip_audit --vulnerability-service pypi --progress-spinner=off
+      - name: Audit dependencies
+        run: python -m pip_audit --vulnerability-service pypi --progress-spinner=off --format=json --output=dependency-audit.json
+      - name: Publish dependency audit summary
+        if: always()
+        run: |
+          python - <<'AUDIT'
+          import json, os
+          from pathlib import Path
+          report = Path('dependency-audit.json')
+          lines = ['## Dependency audit']
+          if report.exists():
+              data = json.loads(report.read_text())
+              findings = [(p['name'], p['version'], v['id'], ', '.join(v['fix_versions'])) for p in data['dependencies'] for v in p.get('vulns', [])]
+              lines += ['| Package | Version | Advisory | Fixed versions |', '| --- | --- | --- | --- |'] if findings else ['No known vulnerabilities found.']
+              lines += ['| ' + ' | '.join(row) + ' |' for row in findings]
+          else:
+              lines += ['The audit did not produce a report. Check its command output.']
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('\n'.join(lines) + '\n')
+          AUDIT
